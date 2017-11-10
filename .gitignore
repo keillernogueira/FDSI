@@ -1,0 +1,6 @@
+*
+!.gitignore
+!segmentation.py
+!metaLearning.py
+!README.md
+!divulg.png
