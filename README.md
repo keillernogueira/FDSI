@@ -1,6 +1,9 @@
 # Flood Detection in Satellite Images [FDSI]
 
-![alt text](divulg.png "Examples of obtained results")
+ <figure>
+  <img src="divulg.png" alt="Obtained Results" width="500">
+  <figcaption>Figure 1. Examples of obtained results using meta-learning approach.</figcaption>
+</figure> 
 
 Natural disaster monitoring is a fundamental task to create prevention strategies, as well as to help authorities to act in the control of damages, coordinate rescues, and help victims.
 Among all natural disasters, flooding is possibly the most extensive and devastating one being considered as the world's most costly type of natural hazard in terms of both economic losses and human causalities.
