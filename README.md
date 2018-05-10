@@ -19,6 +19,5 @@ Among the networks, it includes:
 
   - Two architectures based uniquely on [Dilated Convolutions](https://arxiv.org/abs/1511.07122) (the best in our experiments)
   - Two architectures based on [SegNets](https://arxiv.org/abs/1505.07293)
-  - Two architectures based on [Deconvolutonal Networks](https://arxiv.org/abs/1409.1556)
 
 There is also a code of the meta-learning combination performed to combine all network outcomes using Linear SVM.
