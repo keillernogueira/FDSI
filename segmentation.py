@@ -247,91 +247,6 @@ TensorFlow
 '''
 
 
-def unravel_argmax(argmax, shape):
-    arg1 = argmax // (shape[2] * shape[3])
-    arg2 = argmax % (shape[2] * shape[3]) // shape[3]
-    output_list = [arg1, arg2]
-
-    try:
-        packed = tf.pack(output_list)
-    except:
-        packed = tf.stack(output_list)
-
-    return packed
-
-
-def unpool_layer2x2_batch(bottom, argmax, out_shape=None):
-    bottom_shape = tf.shape(bottom)
-    if out_shape is None:
-        top_shape = [bottom_shape[0], bottom_shape[1] * 2, bottom_shape[2] * 2, bottom_shape[3]]
-    else:
-        top_shape = [bottom_shape[0], out_shape[0], out_shape[1], bottom_shape[3]]
-
-    batch_size = top_shape[0]
-    height = top_shape[1]
-    width = top_shape[2]
-    channels = top_shape[3]
-
-    argmax_shape = tf.to_int64([batch_size, height, width, channels])
-    argmax = unravel_argmax(argmax, argmax_shape)
-
-    t1 = tf.to_int64(tf.range(channels))
-    t1 = tf.tile(t1, [batch_size * tf.to_int32(tf.ceil(width / 2.0)) * tf.to_int32(tf.ceil(height / 2.0))])
-    t1 = tf.reshape(t1, [-1, channels])
-    t1 = tf.transpose(t1, perm=[1, 0])
-    t1 = tf.reshape(t1,
-                    [channels, batch_size, tf.to_int32(tf.ceil(height / 2.0)), tf.to_int32(tf.ceil(width / 2.0)), 1])
-    t1 = tf.transpose(t1, perm=[1, 0, 2, 3, 4])
-
-    t2 = tf.to_int64(tf.range(batch_size))
-    t2 = tf.tile(t2, [channels * tf.to_int32(tf.ceil(width / 2.0)) * tf.to_int32(tf.ceil(height / 2.0))])
-    t2 = tf.reshape(t2, [-1, batch_size])
-    t2 = tf.transpose(t2, perm=[1, 0])
-    t2 = tf.reshape(t2,
-                    [batch_size, channels, tf.to_int32(tf.ceil(height / 2.0)), tf.to_int32(tf.ceil(width / 2.0)), 1])
-
-    t3 = tf.transpose(argmax, perm=[1, 4, 2, 3, 0])
-
-    try:
-        t = tf.concat(4, [t2, t3, t1])
-    except:
-        t = tf.concat([t2, t3, t1], 4)
-
-    indices = tf.reshape(t, [
-        tf.to_int32(tf.ceil(height / 2.0)) * tf.to_int32(tf.ceil(width / 2.0)) * channels * batch_size, 4])
-
-    x1 = tf.transpose(bottom, perm=[0, 3, 1, 2])
-    values = tf.reshape(x1, [-1])
-
-    delta = tf.SparseTensor(indices, values, tf.to_int64(top_shape))
-    return tf.sparse_tensor_to_dense(tf.sparse_reorder(delta))
-
-
-def unpool(updates, mask, out_shape=None, name='unpool'):
-    with tf.variable_scope(name):
-        mask = tf.cast(mask, tf.int32)
-        input_data_shape = tf.shape(updates, out_type=tf.int32)
-        #  calculation new shape
-        output_shape = (input_data_shape[0], out_shape[0], out_shape[1], input_data_shape[3])
-
-        # calculation indices for batch, height, width and feature maps
-        one_like_mask = tf.ones_like(mask, dtype=tf.int32)
-        batch_shape = tf.concat([[input_data_shape[0]], [1], [1], [1]], 0)
-        batch_range = tf.reshape(tf.range(output_shape[0], dtype=tf.int32), shape=batch_shape)
-        b = one_like_mask * batch_range
-        y = mask // (output_shape[2] * output_shape[3])
-        x = (mask // output_shape[3]) % output_shape[2]  # mask % (output_shape[2] * output_shape[3]) // output_shape[3]
-        feature_range = tf.range(output_shape[3], dtype=tf.int32)
-        f = one_like_mask * feature_range
-
-        # transpose indices & reshape update values to one dimension
-        updates_size = tf.size(updates)
-        indices = tf.transpose(tf.reshape(tf.stack([b, y, x, f]), [4, updates_size]))
-        values = tf.reshape(updates, [updates_size])
-        ret = tf.scatter_nd(indices, values, output_shape)
-        return ret
-
-
 def _add_weight_decay(var, weight_decay, collection_name='losses'):
     if not tf.get_variable_scope().reuse:
         try:
@@ -461,176 +376,12 @@ def _deconv_layer(input_data, f_shape, output_shape, is_training, stride=2, has_
 NETWORKS
 '''
 
-
-def deconv_25(x, dropout, is_training, weight_decay, crop_size, channels):
-    x = tf.reshape(x, shape=[-1, crop_size, crop_size, channels])  # 25x25
-    # norm1
-    # norm1 = tf.nn.local_response_normalization(x, depth_radius=5, bias=1.0, alpha=0.0001, beta=0.75, name='norm1')
-    # 25x25
-
-    # conv1 + bn + ReLU
-    conv1 = _conv_layer(x, [3, 3, channels, 64], "conv1", weight_decay, is_training)  # batchx25x25x64
-    # conv2 + bn + ReLU
-    conv2 = _conv_layer(conv1, [3, 3, 64, 64], "conv2", weight_decay, is_training)  # batchx25x25x64
-    # pool1
-    pool1, pool1_indices = _max_pool_with_argmax(conv2, kernel=[1, 2, 2, 1], strides=[1, 2, 2, 1],
-                                                 name='pool1')  # batchx13x13x64
-
-    # conv3 + bn + ReLU
-    conv3 = _conv_layer(pool1, [3, 3, 64, 128], "conv3", weight_decay, is_training)  # batchx13x13x64
-    # conv4 + bn + ReLU
-    conv4 = _conv_layer(conv3, [3, 3, 128, 128], "conv4", weight_decay, is_training)  # batchx13x13x128
-    # pool2
-    pool2, pool2_indices = _max_pool_with_argmax(conv4, kernel=[1, 2, 2, 1], strides=[1, 2, 2, 1],
-                                                 name='pool2')  # batchx7x7x128
-
-    # conv5 + bn + ReLU
-    conv5 = _conv_layer(pool2, [3, 3, 128, 256], "conv5", weight_decay, is_training)  # batchx7x7x256
-    # conv6 + bn + ReLU
-    conv6 = _conv_layer(conv5, [3, 3, 256, 256], "conv6", weight_decay, is_training)  # batchx7x7x256
-    # conv7 + bn + ReLU
-    # conv7 = _conv_layer(conv6, [3, 3, 256, 256], "conv7", weight_decay, is_training) # 7x7
-    # pool3
-    pool3, pool3_indices = _max_pool_with_argmax(conv6, kernel=[1, 2, 2, 1], strides=[1, 2, 2, 1],
-                                                 name='pool3')  # batchx4x4x256
-
-    # conv7 + bn + ReLU
-    # conv7 = _conv_layer(pool3, [3, 3, 256, 512], "conv7", weight_decay, is_training) # 4x4
-    # conv8 + bn + ReLU
-    # conv8 = _conv_layer(conv7, [3, 3, 512, 512], "conv8", weight_decay, is_training) # 4x4
-    # pool4
-    # pool4, pool4_indices = _max_pool_with_argmax(conv8, kernel=[1, 2, 2, 1], strides=[1, 2, 2, 1], name='pool4')# 2x2
-
-    # conv7 + bn + ReLU
-    fc6 = _conv_layer(pool3, [4, 4, 256, 1024], "fc6", weight_decay, is_training,
-                      strides=[1, 4, 4, 1])  # batchx1x1x1024
-
-    """ -------------------End of encoder----------------------- """
-
-    fc7 = _conv_layer(fc6, [1, 1, 1024, 1024], "fc7", weight_decay, is_training)  # batchx1x1x1024
-
-    """ ---------------------start upsample-------------------- """
-
-    fc6_deconv = _deconv_layer(fc7, f_shape=[4, 4, 256, 1024], output_shape=tf.shape(pool3), is_training=is_training,
-                               weight_decay=weight_decay, stride=1, name="fc6_deconv")  # batchx4x4x256
-
-    # upsample 4
-    # upsample4 = unpool_layer2x2_batch(fc6_deconv, pool4_indices, out_shape=[4,4])
-    # deconv8
-    # deconv8 = _deconv_layer(upsample4, f_shape=[3, 3, 1024, 256], output_shape=tf.shape(conv8), stride=1,
-    # name="deconv8")
-    # deconv7
-    # deconv7 = _deconv_layer(deconv8, f_shape=[3, 3, 256, 128], output_shape=tf.shape(conv7), stride=1, name="deconv7")
-
-    # upsample 3
-    upsample3 = unpool_layer2x2_batch(fc6_deconv, pool3_indices, out_shape=[7, 7])  # batchx7x7x256
-    # deconv6
-    deconv6 = _deconv_layer(upsample3, f_shape=[3, 3, 256, 256], output_shape=tf.shape(conv6), is_training=is_training,
-                            weight_decay=weight_decay, stride=1, name="deconv6")  # batchx7x7x256
-    # deconv5
-    deconv5 = _deconv_layer(deconv6, f_shape=[3, 3, 128, 256], output_shape=tf.shape(pool2), is_training=is_training,
-                            weight_decay=weight_decay, stride=1, name="deconv5")  # batchx7x7x128
-
-    # upsample2
-    upsample2 = unpool_layer2x2_batch(deconv5, pool2_indices, out_shape=[13, 13])  # 13x13
-    # deconv4
-    deconv4 = _deconv_layer(upsample2, f_shape=[3, 3, 128, 128], output_shape=tf.shape(conv4), is_training=is_training,
-                            weight_decay=weight_decay, stride=1, name="deconv4")  # batchx13x13x128
-    # deconv3
-    deconv3 = _deconv_layer(deconv4, f_shape=[3, 3, 64, 128], output_shape=tf.shape(pool1), is_training=is_training,
-                            weight_decay=weight_decay, stride=1, name="deconv3")  # batchx13x13x64
-
-    # upsample1
-    upsample1 = unpool_layer2x2_batch(deconv3, pool1_indices, out_shape=[25, 25])  # 25x25
-    # deconv2
-    deconv2 = _deconv_layer(upsample1, f_shape=[3, 3, 64, 64], output_shape=tf.shape(conv2), is_training=is_training,
-                            weight_decay=weight_decay, stride=1, name="deconv2")  # batchx25x25x64
-    # deconv1
-    deconv1 = _deconv_layer(deconv2, f_shape=[3, 3, 64, 64], output_shape=tf.shape(conv1), is_training=is_training,
-                            weight_decay=weight_decay, stride=1, name="deconv1")  # batchx25x25x64
-    """ end of Decode """
-
-    """ Start Classification """
-    with tf.variable_scope('conv_classifier') as scope:
-        kernel = _variable_with_weight_decay('weights', shape=[1, 1, 64, NUM_CLASSES],
-                                             ini=tf.contrib.layers.xavier_initializer_conv2d(dtype=tf.float32),
-                                             weight_decay=weight_decay)
-        biases = _variable_on_cpu('biases', [NUM_CLASSES], tf.constant_initializer(0.0))
-
-        conv = tf.nn.conv2d(deconv1, kernel, [1, 1, 1, 1], padding='SAME')
-        conv_classifier = tf.nn.bias_add(conv, biases, name=scope.name)
-
-    return conv_classifier
+'''
+segnet_25
+'''
 
 
-def deconv_icpr(x, dropout, is_training, weight_decay, crop_size, channels):
-    # Reshape input_data picture
-    x = tf.reshape(x, shape=[-1, crop_size, crop_size, channels])  # default: 50x50xchannels
-    # print x.get_shape()
-
-    # conv0 = _conv_layer(x, [4,4,channels,64], "conv0", weight_decay, is_training) # 50x50x64
-    # pool0, pool0_indices = _max_pool_with_argmax(conv0, kernel=[1, 2, 2, 1], strides=[1, 2, 2, 1], name='pool0')
-    # 25x25x64
-
-    conv1 = _conv_layer(x, [4, 4, channels, 64], "conv1", weight_decay, is_training)  # 25x25x128
-    pool1, pool1_indices = _max_pool_with_argmax(conv1, kernel=[1, 2, 2, 1], strides=[1, 2, 2, 1],
-                                                 name='pool1')  # 13x13x64
-
-    conv2 = _conv_layer(pool1, [4, 4, 64, 128], 'conv2', weight_decay, is_training)  # 13x13x128
-    pool2, pool2_indices = _max_pool_with_argmax(conv2, kernel=[1, 2, 2, 1], strides=[1, 2, 2, 1],
-                                                 name='pool2')  # 7x7x128
-
-    conv3 = _conv_layer(pool2, [3, 3, 128, 256], 'conv3', weight_decay, is_training)  # 7x7x256
-    pool3, pool3_indices = _max_pool_with_argmax(conv3, kernel=[1, 2, 2, 1], strides=[1, 2, 2, 1],
-                                                 name='pool3')  # 4x4x256
-    # upsample3
-    # unpool3 = unpool_layer2x2_batch(pool3, pool3_indices, out_shape=[7,7]) # 7x7x256
-    unpool3 = unpool(pool3, pool3_indices, out_shape=[7, 7])
-    upsample3 = _deconv_layer(unpool3, f_shape=[3, 3, 128, 256], output_shape=tf.shape(pool2), is_training=is_training,
-                              weight_decay=weight_decay, stride=1, name="up3")  # 7x7x128
-
-    # upsample2
-    # unpool2 = unpool_layer2x2_batch(upsample3, pool2_indices, out_shape=[13,13]) # 13x13x128
-    unpool2 = unpool(upsample3, pool2_indices, out_shape=[13, 13])
-    upsample2 = _deconv_layer(unpool2, f_shape=[4, 4, 64, 128], output_shape=tf.shape(pool1), is_training=is_training,
-                              weight_decay=weight_decay, stride=1, name="up2")  # 13x13x64
-
-    # upsample1
-    # unpool1 = unpool_layer2x2_batch(upsample2, pool1_indices, out_shape=[25,25]) # 25x25x128
-    unpool1 = unpool(upsample2, pool1_indices, out_shape=[25, 25])
-    try:
-        out = tf.pack([tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], 64])
-    except:
-        out = tf.stack([tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], 64])
-    upsample1 = _deconv_layer(unpool1, f_shape=[4, 4, 64, 64], output_shape=out, is_training=is_training,
-                              weight_decay=weight_decay, stride=1, name="up1")  # 25x25x64
-
-    # upsample1
-    # unpool0 = unpool_layer2x2_batch(upsample1, pool0_indices, out_shape=[50,50]) # 50x50x64
-    # unpool0 = unpool(upsample1, pool0_indices, out_shape=[50,50])
-    # try:
-    # out = tf.pack([tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], 64])
-    # except:
-    # out = tf.stack([tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], 64])
-    # upsample0 = _deconv_layer(unpool0, f_shape=[4,4,64,64], output_shape=out,
-    # is_training=is_training, weight_decay=weight_decay, stride=1, name="up0") # 50x50x64
-    """ end of Decode """
-
-    """ Start Classify """
-    # output predicted class number (6)
-    with tf.variable_scope('conv_classifier') as scope:
-        kernel = _variable_with_weight_decay('weights', shape=[1, 1, 64, NUM_CLASSES],
-                                             ini=tf.contrib.layers.xavier_initializer_conv2d(dtype=tf.float32),
-                                             weight_decay=weight_decay)
-        biases = _variable_on_cpu('biases', [NUM_CLASSES], tf.constant_initializer(0.0))
-
-        conv = tf.nn.conv2d(upsample1, kernel, [1, 1, 1, 1], padding='SAME')
-        conv_classifier = tf.nn.bias_add(conv, biases, name=scope.name)
-
-    return conv_classifier
-
-
-def segnet_25(x, dropout, is_training, weight_decay, crop_size, channels):
+def deconvnet_1(x, dropout, is_training, weight_decay, crop_size, channels):
     x = tf.reshape(x, shape=[-1, crop_size, crop_size, channels])  # 50x50xchannels
 
     # norm1
@@ -722,7 +473,12 @@ def segnet_25(x, dropout, is_training, weight_decay, crop_size, channels):
     return conv_classifier
 
 
-def segnet_icpr(x, dropout, is_training, weight_decay, crop_size, channels):
+'''
+segnet_icpr
+'''
+
+
+def deconvnet_2(x, dropout, is_training, weight_decay, crop_size, channels):
     # Reshape input_data picture
     x = tf.reshape(x, shape=[-1, crop_size, crop_size, channels])  # default: 50x50xchannels
     # print x.get_shape()
@@ -801,7 +557,12 @@ def segnet_icpr(x, dropout, is_training, weight_decay, crop_size, channels):
     return conv_classifier
 
 
-def dilated_icpr(x, dropout, is_training, weight_decay, crop_size, channels):
+'''
+dilated_icpr
+'''
+
+
+def dilated_convnet_1(x, dropout, is_training, weight_decay, crop_size, channels):
     # Reshape input_data picture
     x = tf.reshape(x, shape=[-1, crop_size, crop_size, channels])  # default: 25x25
     # print x.get_shape()
@@ -831,7 +592,12 @@ def dilated_icpr(x, dropout, is_training, weight_decay, crop_size, channels):
     return conv_classifier
 
 
-def dilated_grsl(x, dropout, is_training, weight_decay, crop_size, channels):
+'''
+dilated_grsl
+'''
+
+
+def dilated_convnet_2(x, dropout, is_training, weight_decay, crop_size, channels):
     # Reshape input_data picture
     x = tf.reshape(x, shape=[-1, crop_size, crop_size, channels])  # default: 25x25
     # print x.get_shape()
@@ -880,8 +646,7 @@ def loss_def(_logits, _labels):
 
 
 def validate(sess, data, labels, validation_class_distribution, n_input_data, n_input_data_mask, batch_size, x, y,
-             keep_prob,
-             is_training, pred_up, upscore, step, crop_size, mean, std, output_path):
+             keep_prob, is_training, pred_up, upscore, step, crop_size, mean, std, output_path):
     if len(validation_class_distribution) == 2:
         validation_class_distribution = validation_class_distribution[0] + validation_class_distribution[1]
     total_length = len(validation_class_distribution)
@@ -896,7 +661,7 @@ def validate(sess, data, labels, validation_class_distribution, n_input_data, n_
 
     for i in xrange(0,
                     ((total_length / batch_size) if (total_length % batch_size) == 0 else (
-                        total_length / batch_size) + 1)):
+                                total_length / batch_size) + 1)):
         b_x, b_y = dynamically_create_patches(data, labels, crop_size, validation_class_distribution,
                                               list_index[i * batch_size:min(i * batch_size + batch_size, total_length)])
         normalize_images(b_x, mean, std)
@@ -933,7 +698,7 @@ def validate(sess, data, labels, validation_class_distribution, n_input_data, n_
 
 
 def train(data, labels, class_distribution, validation_class_distribution, lr_initial, batch_size, niter, weight_decay,
-          crop_size, output_path, net_type, has_validation, mean, std):
+          crop_size, output_path, former_model_path, net_type, has_validation, mean, std):
     channels = len(data[0][1][0][0])
     total_length = len(class_distribution[0]) + len(class_distribution[1])
     total_class_distribution = class_distribution[0] + class_distribution[1]
@@ -955,18 +720,14 @@ def train(data, labels, class_distribution, validation_class_distribution, lr_in
     is_training = tf.placeholder(tf.bool, [], name='is_training')
 
     # CONVNET
-    if net_type == 'deconv25':
-        upscore = deconv_25(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'deconvICPR':
-        upscore = deconv_icpr(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'segnet_25':
-        upscore = segnet_25(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'segnetICPR':
-        upscore = segnet_icpr(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'dilated_icpr':
-        upscore = dilated_icpr(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'dilated_grsl':
-        upscore = dilated_grsl(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    if net_type == 'deconvnet_1':
+        upscore = deconvnet_1(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    elif net_type == 'deconvnet_2':
+        upscore = deconvnet_2(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    elif net_type == 'dilatedICPR':
+        upscore = dilated_convnet_1(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    elif net_type == 'dilatedGRSL':
+        upscore = dilated_convnet_2(x, keep_prob, is_training, weight_decay, crop_size, channels)
     else:
         print BatchColors.FAIL + 'Network type not found: ' + net_type + BatchColors.ENDC
         return
@@ -982,6 +743,7 @@ def train(data, labels, class_distribution, validation_class_distribution, lr_in
     pred_up = tf.argmax(upscore, dimension=3)
 
     shuffle = np.asarray(random.sample(xrange(3 * total_length), 3 * total_length))
+    current_iter = 1
 
     init = tf.initialize_all_variables()
     saver = tf.train.Saver()
@@ -989,7 +751,13 @@ def train(data, labels, class_distribution, validation_class_distribution, lr_in
 
     # Launch the graph
     with tf.Session() as sess:
-        sess.run(init)
+        if 'model' in former_model_path:
+            current_iter = int(former_model_path.split('-')[-1])
+            print 'Model restored from ' + former_model_path
+            saver_restore.restore(sess, former_model_path)
+        else:
+            sess.run(init)
+            print 'Model totally initialized!'
         # saver_restore.restore(sess, output_path + 'model_90000')
         # print BatchColors.OKGREEN + 'Model restored!' + BatchColors.ENDC
 
@@ -998,8 +766,8 @@ def train(data, labels, class_distribution, validation_class_distribution, lr_in
         epoch_cm_train = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.uint32)
 
         # Keep training until reach max iterations
-        for step in xrange(1, niter + 1):
-            b_x, b_y = dynamically_create_patches(data, labels, crop_size, total_class_distribution, 
+        for step in xrange(current_iter, niter + 1):
+            b_x, b_y = dynamically_create_patches(data, labels, crop_size, total_class_distribution,
                                                   shuffle[it * batch_size:min(it * batch_size + batch_size, 3 * total_length)])
             normalize_images(b_x, mean, std)
 
@@ -1024,11 +792,13 @@ def train(data, labels, class_distribution, validation_class_distribution, lr_in
 
                 # IoU accuracy
                 _sum_iou = (batch_cm_train[1][1] / float(
-                    np.sum(batch_cm_train[:, 1]) + np.sum(batch_cm_train[1]) - batch_cm_train[1][1]) 
-                            if (np.sum(batch_cm_train[:, 1]) + np.sum(batch_cm_train[1]) - batch_cm_train[1][1]) != 0 
+                    np.sum(batch_cm_train[:, 1]) + np.sum(batch_cm_train[1]) - batch_cm_train[1][1])
+                            if (np.sum(batch_cm_train[:, 1]) + np.sum(batch_cm_train[1]) - batch_cm_train[1][1]) != 0
                             else 0)
 
-                print("Iter " + str(step) + " -- Training Minibatch: Loss= " + "{:.6f}".format(loss_batch) +
+                print("Iter " + str(step) +
+                      " -- Time " + str(datetime.datetime.now().time()) +
+                      " -- Training Minibatch: Loss= " + "{:.6f}".format(loss_batch) +
                       " Overall Accuracy= " + "{:.4f}".format(acc / float(np.sum(batch_cm_train))) +
                       " Normalized Accuracy= " + "{:.4f}".format(_sum / float(NUM_CLASSES)) +
                       " IoU (TP / (TP + FP + FN))= " + "{:.4f}".format(_sum_iou) +
@@ -1046,11 +816,12 @@ def train(data, labels, class_distribution, validation_class_distribution, lr_in
 
                 # IoU accuracy
                 _sum_iou = (epoch_cm_train[1][1] / float(
-                    np.sum(epoch_cm_train[:, 1]) + np.sum(epoch_cm_train[1]) - epoch_cm_train[1][1]) 
-                            if (np.sum(epoch_cm_train[:, 1]) + np.sum(epoch_cm_train[1]) - epoch_cm_train[1][1]) != 0 
+                    np.sum(epoch_cm_train[:, 1]) + np.sum(epoch_cm_train[1]) - epoch_cm_train[1][1])
+                            if (np.sum(epoch_cm_train[:, 1]) + np.sum(epoch_cm_train[1]) - epoch_cm_train[1][1]) != 0
                             else 0)
 
                 print("-- Iter " + str(step) + " -- Training Epoch:" +
+                      " -- Time " + str(datetime.datetime.now().time()) +
                       " Overall Accuracy= " + "{:.6f}".format(epoch_mean / float(np.sum(epoch_cm_train))) +
                       " Normalized Accuracy= " + "{:.6f}".format(_sum / float(NUM_CLASSES)) +
                       " IoU (TP / (TP + FP + FN))= " + "{:.4f}".format(_sum_iou) +
@@ -1106,18 +877,14 @@ def validate_from_previous_model(data, labels, validation_class_distribution, ba
     is_training = tf.placeholder(tf.bool, [], name='is_training')
 
     # CONVNET
-    if net_type == 'deconv25':
-        upscore = deconv_25(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'deconvICPR':
-        upscore = deconv_icpr(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'segnet_25':
-        upscore = segnet_25(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'segnetICPR':
-        upscore = segnet_icpr(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'dilated_icpr':
-        upscore = dilated_icpr(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'dilated_grsl':
-        upscore = dilated_grsl(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    if net_type == 'deconvnet_1':
+        upscore = deconvnet_1(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    elif net_type == 'deconvnet_2':
+        upscore = deconvnet_2(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    elif net_type == 'dilatedICPR':
+        upscore = dilated_convnet_1(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    elif net_type == 'dilatedGRSL':
+        upscore = dilated_convnet_2(x, keep_prob, is_training, weight_decay, crop_size, channels)
     else:
         print 'Network type not found!'
         return
@@ -1161,18 +928,14 @@ def test(data, labels, test_classes_distribution, batch_size, niter, weight_deca
     is_training = tf.placeholder(tf.bool, [], name='is_training')
 
     # CONVNET
-    if net_type == 'deconv25':
-        upscore = deconv_25(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'deconvICPR':
-        upscore = deconv_icpr(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'segnet_25':
-        upscore = segnet_25(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'segnetICPR':
-        upscore = segnet_icpr(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'dilated_icpr':
-        upscore = dilated_icpr(x, keep_prob, is_training, weight_decay, crop_size, channels)
-    elif net_type == 'dilated_grsl':
-        upscore = dilated_grsl(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    if net_type == 'deconvnet_1':
+        upscore = deconvnet_1(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    elif net_type == 'deconvnet_2':
+        upscore = deconvnet_2(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    elif net_type == 'dilated_convnet_1':
+        upscore = dilated_convnet_1(x, keep_prob, is_training, weight_decay, crop_size, channels)
+    elif net_type == 'dilated_convnet_2':
+        upscore = dilated_convnet_2(x, keep_prob, is_training, weight_decay, crop_size, channels)
     else:
         print 'Network type not found!'
         return
@@ -1224,11 +987,16 @@ def test(data, labels, test_classes_distribution, batch_size, niter, weight_deca
     tf.reset_default_graph()
 
 
+'''
+python segmentation.py /home/mediaeval17/FDSI/ /home/mediaeval17/FDSI/aux/ /home/mediaeval17/FDSI/ 0.01 0.005 100 100 50 25 deconvnet_1 0 training
+'''
+
+
 def main():
-    list_params = ['input_data_path', 'output_path(for model, images, etc)', 'former_model_path(only for testing purpose)',
-                  'learningRate', 'weight_decay', 'batch_size', 'niter', 'crop_size', 'strideCrop',
-                  'networkType (deconv50|deconvICPR|deconvTuia|segnet25|segnetICPR)', 'specific_event[0 to all]',
-                  'process[training|validate|testing]']
+    list_params = ['input_data_path', 'output_path(for model, images, etc)', 'former_model_path',
+                   'learningRate', 'weight_decay', 'batch_size', 'niter', 'crop_size', 'strideCrop',
+                   'networkType (deconvnet_1|deconvnet_2|dilated_convnet_1|dilated_convnet_2)', 'specific_event[0 to all]',
+                   'process[training|validate|testing]']
     if len(sys.argv) < len(list_params) + 1:
         sys.exit('Usage: ' + sys.argv[0] + ' ' + ' '.join(list_params))
     print_params(list_params)
@@ -1275,8 +1043,8 @@ def main():
         test_data, _ = load_images(input_data_path + 'test/', specific_event=specific_event)
         test_fake_labels = []
         for i in xrange(len(test_data)):
-            test_fake_labels.append(
-                (test_data[i][0], np.zeros((len(test_data[0][1][0]), len(test_data[0][1][1])), dtype=np.uint8)))
+            test_fake_labels.append((test_data[i][0], np.zeros((len(test_data[0][1][0]),
+                                                                len(test_data[0][1][1])), dtype=np.uint8)))
     elif process == 'testing_diff':
         print BatchColors.WARNING + 'Reading Test Data...' + BatchColors.ENDC
         test_data, _ = load_images(input_data_path + 'test/new_test_diff/', specific_event=specific_event)
@@ -1289,13 +1057,13 @@ def main():
         print BatchColors.WARNING + 'Class distribution...' + BatchColors.ENDC
 
         if specific_event is None:
-            class_name = 'class_distribution_' + str(crop_size) + '.npy'
+            class_name = 'classDistribution_' + str(crop_size) + '.npy'
             if has_validation is True:
-                validation_name = 'validation_class_distribution_' + str(crop_size) + '.npy'
+                validation_name = 'validationClassDistribution_' + str(crop_size) + '.npy'
         else:
-            class_name = 'class_distribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
+            class_name = 'classDistribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
             if has_validation is True:
-                validation_name = 'validation_class_distribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
+                validation_name = 'validationClassDistribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
 
         if os.path.isfile(os.getcwd() + '/' + class_name):
             class_distribution = np.load(os.getcwd() + '/' + class_name)
@@ -1316,8 +1084,8 @@ def main():
 
         mean, std = dynamically_calculate_mean_and_std(data, crop_size, class_distribution)
 
-        nets = [
-            'dilated_icpr']  # ['segnet_25', 'segnetICPR', 'dilated_icpr', 'dilated_grsl',  'deconvICPR', 'deconv25']
+        nets = ['segNet', 'segnetICPR', 'dilatedGRSL']  # ['segNet', 'segnetICPR', 'dilatedICPR', 'dilatedGRSL']
+        # 'deconvICPR', 'deconv25']
         for net in nets:
             if specific_event is None:
                 currentoutput_path = output_path + 'output_' + net + '_' + str(crop_size) + '/'
@@ -1330,27 +1098,29 @@ def main():
             print(BatchColors.OKGREEN + 'Current network: ' + net + BatchColors.ENDC)
             if has_validation is True:
                 train(data, labels, class_distribution, validation_class_distribution, lr_initial, batch_size, niter,
-                      weight_decay, crop_size, output_path=currentoutput_path, net_type=net,
-                      has_validation=has_validation,
-                      mean=mean, std=std)
+                      weight_decay, crop_size, output_path=currentoutput_path, former_model_path=former_model_path,
+                      net_type=net, has_validation=has_validation, mean=mean, std=std)
             else:
                 train(data, labels, class_distribution, [], lr_initial, batch_size, niter, weight_decay, crop_size,
-                      output_path=currentoutput_path, net_type=net, has_validation=has_validation, mean=mean, std=std)
+                      output_path=currentoutput_path, former_model_path=former_model_path,
+                      net_type=net, has_validation=has_validation, mean=mean, std=std)
     elif process == 'validate':
         if specific_event is None:
-            class_name = 'class_distribution_' + str(crop_size) + '.npy'
-            validation_name = 'validation_class_distribution_' + str(crop_size) + '.npy'
+            class_name = 'classDistribution_' + str(crop_size) + '.npy'
+            validation_name = 'validationClassDistribution_' + str(crop_size) + '.npy'
         else:
-            class_name = 'class_distribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
-            validation_name = 'validation_class_distribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
+            class_name = 'classDistribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
+            validation_name = 'validationClassDistribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
 
         if os.path.isfile(os.getcwd() + '/' + class_name):
             class_distribution = np.load(os.getcwd() + '/' + class_name)
             validation_class_distribution = np.load(os.getcwd() + '/' + validation_name)
+            print(BatchColors.OKGREEN + 'Distribution Loaded!' + BatchColors.ENDC)
         else:
             class_distribution = create_distributions_over_classes(labels, crop_size, strideCrop)
             validation_class_distribution = create_balanced_validation_set(class_distribution, percentage_val=0.2)
             np.save(os.getcwd() + '/' + validation_name, validation_class_distribution)
+            print(BatchColors.OKGREEN + 'Distribution Saved!' + BatchColors.ENDC)
         mean, std = dynamically_calculate_mean_and_std(data, crop_size, class_distribution)
 
         # exclude others
@@ -1373,16 +1143,17 @@ def main():
                                      former_model_path, output_path, net_type, mean=mean, std=std)
     elif 'testing' in process:
         # TEST
-
         if specific_event is None:
-            class_name = 'class_distribution_' + str(crop_size) + '.npy'
+            class_name = 'classDistribution_' + str(crop_size) + '.npy'
         else:
-            class_name = 'class_distribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
+            class_name = 'classDistribution_' + str(crop_size) + '_' + str(specific_event) + '.npy'
 
         if os.path.isfile(os.getcwd() + '/' + class_name):
             class_distribution = np.load(os.getcwd() + '/' + class_name)
+            print(BatchColors.OKGREEN + 'Distribution Loaded!' + BatchColors.ENDC)
         else:
             class_distribution = create_distributions_over_classes(labels, crop_size, strideCrop)
+            print(BatchColors.OKGREEN + 'Distribution Saved!' + BatchColors.ENDC)
         mean, std = dynamically_calculate_mean_and_std(data, crop_size, class_distribution)
 
         testclass_distribution = create_distributions_over_classes(test_fake_labels, crop_size, strideCrop)
