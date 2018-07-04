@@ -1,8 +1,8 @@
 # Flood Detection in Satellite Images [FDSI]
 
 <p align="center">
-<figure display="block">
-  <img src="divulg.png" alt="Obtained Results" width="500" display="block" margin-left="auto" margin-right="auto">
+<figure>
+  <img src="divulg.png" alt="Obtained Results" width="500">
   <figcaption>Figure 1. Examples of obtained results using meta-learning approach.</figcaption>
 </figure> 
 </p>
