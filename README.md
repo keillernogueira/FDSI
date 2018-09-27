@@ -31,5 +31,9 @@ If you use this code in your research, please consider citing:
         author = {Keiller Nogueira and Samuel G. Fadel and Ícaro C. Dourado and Rafael de O. Werneck and Javier A. V. Muñoz and Otávio A. B. Penatti and Rodrigo T. Calumby and Lin Tzy Li and Jefersson A. dos Santos and Ricardo da S. Torres}
         title = {Exploiting ConvNet Diversity for Flooding Identification},
         journal = {{IEEE} Geoscience and Remote Sensing Letters},
-        year = {2018}
+        volume={15},
+        number={9},
+        pages={1446--1450},
+        year = {2018},
+        publisher={IEEE}
     }
